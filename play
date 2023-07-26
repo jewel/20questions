@@ -1,0 +1,109 @@
+#!/usr/bin/ruby
+
+require 'net/http'
+require 'json'
+require 'pathname'
+
+exe_path = Pathname.new File.dirname File.realpath $PROGRAM_NAME
+api_file = exe_path + ".api_key"
+
+abort "Need OpenAI ChatGPT API key in .api_key" unless api_file.file?
+
+API_KEY = api_file.read.chomp
+
+def ask_bot message, function
+  uri = URI('https://api.openai.com/v1/chat/completions')
+  request_body = {
+    model: 'gpt-3.5-turbo',
+    messages: [
+      {
+        role: "user",
+        content: message,
+      },
+    ],
+    max_tokens: 2048,
+    functions: [function],
+  }
+
+  Net::HTTP.start uri.host, uri.port, use_ssl: true do |http|
+    request = Net::HTTP::Post.new uri.path
+    request.add_field "Content-Type", 'application/json'
+    request.add_field "Authorization", "Bearer #{API_KEY}"
+    request.body = request_body.to_json
+    http.request request do |res|
+      unless res.code.to_i == 200
+        raise "Request failed: #{res.code} #{res.message}: #{res.body}"
+      end
+
+      json = res.body
+      answer = JSON.parse json, symbolize_names: true
+      args_string = answer[:choices].first[:message][:function_call][:arguments]
+      args = JSON.parse args_string, symbolize_names: true
+      return args
+    end
+  end
+end
+
+def prompt prefix=""
+  print "#{prefix}> "
+  STDOUT.flush
+  STDIN.gets.chomp
+end
+
+puts "Let's play 20 questions!  What level of difficulty would you like?"
+
+difficulty = prompt
+
+args = ask_bot "You are about to play 20 questions against my friend.  My friend has asked for a level of difficulty of #{difficulty.inspect}.  Think of the final answer.", {
+  name: 'set_answer',
+  description: 'set the answer to the 20 questions game',
+  parameters: {
+    type: 'object',
+    properties: {
+      answer: {
+        type: 'string',
+        description: 'the answer, e.g. "dog", "mushroom", "Abraham Lincoln"',
+      },
+    },
+    required: ["answer"],
+  },
+}
+
+answer = args[:answer]
+puts "DEBUG: The bot is thinking of a #{answer.inspect}"
+
+questions_left = 20
+while questions_left > 0
+  puts
+  question = prompt questions_left.to_s
+  args = ask_bot "You are playing 20 questions against my friend.  You are thinking of a #{answer.inspect}.  My friend asks:\n#{question}", {
+    name: 'give_response',
+    description: "respond to the friend's question",
+    parameters: {
+      type: 'object',
+      properties: {
+        response: {
+          type: 'string',
+          description: 'Your response to the question.  For example: "Yes", "No", "That\'s it!  Good Job!", "I cannot give you an answer because either Yes or No would be deceiving."',
+        },
+        increment_count: {
+          type: 'boolean',
+          description: "Whether or not the question should count against their 20 question total.  Usually this would be true, unless you decide that the question is unfair and should be thrown out.",
+        },
+        correct: {
+          type: 'boolean',
+          description: "Did the friend correctly guess the thing you were thinking of?  Usually false unless the friend is substantially correct.",
+        },
+      },
+    },
+  }
+
+  puts args[:response]
+  questions_left -= 1 if args[:increment_count]
+  if args[:correct]
+    puts "You have guessed #{answer} with #{questions_left} questions left"
+    exit 0
+  end
+end
+
+puts "You have lost.  The correct answer was #{answer}."
